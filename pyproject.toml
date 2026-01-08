@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "med-blosc2"
+description = "A standardized blosc2 image reader and writer for medical images."
+readme = "README.md"
+requires-python = ">= 3.9"
+license = { text = "MIT" }
+authors = [{ name = "Karol Gotkowski", email = "karol.gotkowski@dkfz.de" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Operating System :: OS Independent",
+]
+keywords = ["copier", "template", "python"]
+dependencies = []
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.0",
+  "pytest>=7.0",
+  "twine>=4.0",
+  "setuptools_scm[toml]>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Karol-G/med-blosc2"
+Source = "https://github.com/Karol-G/med-blosc2"
+Issues = "https://github.com/Karol-G/med-blosc2/issues"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["med_blosc2*"]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+local_scheme = "node-and-date"
