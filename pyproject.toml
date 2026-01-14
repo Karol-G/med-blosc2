@@ -15,7 +15,10 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 keywords = ["copier", "template", "python"]
-dependencies = []
+dependencies = [
+  "blosc2",
+  "numpy",
+]
 dynamic = ["version"]
 
 [project.optional-dependencies]
