@@ -132,7 +132,7 @@ image.save("manual-chunk-block.mb2nd", patch_size=None,
 
 ## Metadata schema
 
-See `SCHEMA.md` for the full MedBlosc2 metadata schema, including field
+See [SCHEMA.md](SCHEMA.md) for the full MedBlosc2 metadata schema, including field
 descriptions and types.
 
 ## Contributing
