@@ -38,3 +38,4 @@ htmlcov/
 # Blosc2 files
 *.b2nd
 *.mb2nd
+example.py

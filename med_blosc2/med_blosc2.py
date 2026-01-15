@@ -4,8 +4,9 @@ import blosc2
 import math
 from typing import Dict, Optional, Union, List, Tuple
 from pathlib import Path
-import json
 import os
+from med_blosc2.meta import Meta, MetaSpatial, MetaBlosc2
+from med_blosc2.utils import is_serializable
 
 MED_BLOSC2_SUFFIX = "mb2nd"
 MED_BLOSC2_VERSION = "v0"
@@ -18,8 +19,7 @@ class MedBlosc2:
                  spacing: Optional[Union[List, Tuple, np.ndarray]] = None,
                  origin: Optional[Union[List, Tuple, np.ndarray]] = None,
                  direction: Optional[Union[List, Tuple, np.ndarray]] = None,
-                 header: Optional[Dict] = None,
-                 is_seg: Optional[bool] = None,
+                 meta: Optional[Union[Dict, Meta]] = None,
                  mmap: bool = False,
                  num_threads: int = 1,
                  mode: str = 'r',
@@ -42,9 +42,9 @@ class MedBlosc2:
             direction (Optional[Union[List, Tuple, np.ndarray]]): Direction
                 cosine matrix. Provide a 2D list/tuple/ndarray with shape
                 (ndims, ndims).
-            header (Optional[Dict]): Free-form metadata dictionary. Must be
-                JSON-serializable when saving.
-            is_seg (Optional[bool]): Whether the image is a segmentation mask.
+            meta (Optional[Dict | Meta]): Free-form metadata dictionary or Meta
+                instance. Must be JSON-serializable when saving. 
+                If meta is passed as a Dict, it will internally be converted into a Meta object with the dict being interpreted as meta.image metadata.
             mmap (bool): Whether to keep the loaded array memory-mapped when
                 loading from disk. If true, MedBlosc2.array will be an blosc2.ndarray.NDArray, else np.ndarray.
             num_threads (int): Number of threads for Blosc2 operations.
@@ -55,70 +55,66 @@ class MedBlosc2:
             copy (Optional[MedBlosc2]): Another MedBlosc2 instance to copy
                 metadata fields from.
         """
-        if isinstance(array, (str, Path)) and (spacing is not None or origin is not None or direction is not None or header is not None or is_seg is not None or copy is not None):
-            raise RuntimeError("Spacing, origin, direction, header, is_seg or copy cannot be set if array is a string to load an image.")
+        if isinstance(array, (str, Path)) and (spacing is not None or origin is not None or direction is not None or meta is not None or copy is not None):
+            raise RuntimeError("Spacing, origin, direction, meta or copy cannot be set if array is a string to load an image.")
         
         if mode != 'r':
             raise NotImplementedError("Currently 'r' is the only supported blosc2 open mode.")
         
-        self.spacing, self.origin, self.direction, self.chunk_size, self.block_size, self.patch_size, self._med_blosc2_version = None, None, None, None, None, None, None
         if isinstance(array, (str, Path)):
-            array, spacing, origin, direction, header, is_seg, self.chunk_size, self.block_size, self.patch_size, self._med_blosc2_version = self._load(array, num_threads, mode, mmap)
+            array, meta = self._load(array, num_threads, mode, mmap)
+            spacing = meta.spatial.spacing
+            origin = meta.spatial.origin
+            direction = meta.spatial.direction
 
         self.array = array
 
-        # Validate spacing: Must be None or an array-like of same size as image dimensions
-        self._has_spacing = False
-        if spacing is not None:
-            if not isinstance(spacing, (list, tuple, np.ndarray)):
-                raise ValueError("Spacing must be either None, list, tuple, or np.ndarray.")
-            spacing = np.array(spacing).astype(float)
-            if not (spacing.shape == (self.ndims,)):
-                raise ValueError(f"The size of the spacing must be the same as the number of image dimensions.")
-            self._has_spacing = True
-            self.spacing = [float(value) for value in spacing]
-
-        # Validate origin: Must be None or an array-like of same size as image dimensions
-        self._has_origin = False
-        if origin is not None:
-            if not isinstance(origin, (list, tuple, np.ndarray)):
-                raise ValueError("Origin must be either None, list, tuple, or np.ndarray.")
-            origin = np.array(origin).astype(float)
-            if not (origin.shape == (self.ndims,)):
-                raise ValueError(f"The size of the origin must be the same as the number of image dimensions.")
-            self._has_origin = True
-            self.origin = [float(value) for value in origin]
-
-        # Validate direction: Must be None or an array-like with shape (2, 2), (3, 3) or (4, 4) depending on the array dimensionality
-        self._has_direction = False
-        if direction is not None:
-            if not isinstance(direction, (list, tuple, np.ndarray)):
-                raise ValueError("Direction must be either None, list, tuple or np.ndarray.")
-            direction = np.array(direction).astype(float)
-            if not (direction.shape == (self.ndims, self.ndims)):
-                raise ValueError(f"The shape of direction must be ({self.ndims}, {self.ndims}).")
-            self._has_direction = True
-            self.direction = [[float(value) for value in values] for values in direction]
-
-        # Validate header: Must be None or a dictionary
-        self._has_header = False
-        if header is not None:
-            if not isinstance(header, dict):
-                raise ValueError("Header must be None or a dictionary.")
-            self._has_header = True
-        self.header = header
-        
-        # Validate is_seg: Must be None or a boolean
-        self._has_is_seg = False
-        if is_seg is not None:
-            if not isinstance(is_seg, bool):
-                raise ValueError("is_seg must be None or a boolean.")
-            self._has_is_seg = True
-        self.is_seg = is_seg
+        # Validate meta: Must be None, a dictionary or a Meta object. Convert to Meta object if necessary.
+        if meta is not None:
+            if not isinstance(meta, (dict, Meta)):
+                raise ValueError("Meta must be None, a dict or a Meta object.")
+            if isinstance(meta, dict):
+                meta = Meta(image=meta)
+        else:
+            meta = Meta()
+        self.meta = meta
+        self.meta._med_blosc2_version = MED_BLOSC2_VERSION
+        meta_spatial = MetaSpatial(spacing, origin, direction)
+        meta_spatial._validate_and_cast(self.ndims)
+        self.meta.spatial = meta_spatial
         
         # If copy is set, copy fields from the other Nifti instance
         if copy is not None:
-            self._copy_fields_from(copy)
+            self.meta.copy_from(copy.meta)
+
+    @property
+    def spacing(self):
+        """Returns the image spacing.
+
+        Returns:
+            list: The image spacing with length equal to the number of
+            dimensions.
+        """
+        return self.meta.spatial.spacing
+    
+    @property
+    def origin(self):
+        """Returns the image origin.
+
+        Returns:
+            list: The image origin with length equal to the number of
+            dimensions.
+        """
+        return self.meta.spatial.origin
+    
+    @property
+    def direction(self):
+        """Returns the image direction.
+
+        Returns:
+            list: The image direction with shape (ndims, ndims).
+        """
+        return self.meta.spatial.direction
 
     @property
     def affine(self) -> np.ndarray:
@@ -196,23 +192,6 @@ class MedBlosc2:
         """
         return len(self.array.shape)
 
-    def _copy_fields_from(self, other: 'MedBlosc2'):
-        """Copies fields from another MedBlosc2 instance if unset.
-
-        Args:
-            other (MedBlosc2): Instance to copy fields from.
-        """
-        if not self._has_spacing:
-            self.spacing = other.spacing
-        if not self._has_origin:
-            self.origin = other.origin
-        if not self._has_direction:
-            self.direction = other.direction
-        if not self._has_header:
-            self.header = other.header
-        if not self._has_is_seg:
-            self.is_seg = other.is_seg
-
     def _load(
             self,
             filepath: Union[str, Path], 
@@ -245,23 +224,15 @@ class MedBlosc2:
         blosc2.set_nthreads(num_threads)
         dparams = {'nthreads': num_threads}
         array = blosc2.open(urlpath=str(filepath), dparams=dparams, mode=mode, mmap_mode=mode)
-        metadata = dict(array.schunk.meta)
-        spacing, origin, direction, header, is_seg, chunk_size, block_size, patch_size, med_blosc2_version = None, None, None, None, None, None, None, None, None
+        blosc2_metadata = dict(array.schunk.meta)
+        meta = Meta()
         if str(filepath).endswith(f".{MED_BLOSC2_SUFFIX}"):
-            if "med_blosc2" not in metadata:
+            if "med_blosc2" not in blosc2_metadata:
                 raise RuntimeError(f"The header of the .{MED_BLOSC2_SUFFIX} is missing the 'med_blosc2' attribute.")
-            spacing = metadata["med_blosc2"]["spacing"]
-            origin = metadata["med_blosc2"]["origin"]
-            direction = metadata["med_blosc2"]["direction"]
-            header = metadata["med_blosc2"]["header"]
-            is_seg = metadata["med_blosc2"]["is_seg"]
-            chunk_size = metadata["med_blosc2"]["chunk_size"]
-            block_size = metadata["med_blosc2"]["block_size"]
-            patch_size = metadata["med_blosc2"]["patch_size"]
-            med_blosc2_version = metadata["med_blosc2"]["med_blosc2_version"]
+            meta = Meta.from_dict(blosc2_metadata["med_blosc2"])
         if not mmap:
-            array = array[...]   
-        return array, spacing, origin, direction, header, is_seg, chunk_size, block_size, patch_size, med_blosc2_version
+            array = array[...]
+        return array, meta
 
     def save(
             self,
@@ -307,55 +278,39 @@ class MedBlosc2:
             raise RuntimeError(f"MedBlosc2 requires '.b2nd' or '.{MED_BLOSC2_SUFFIX}' as extension.")
         blosc2.set_nthreads(num_threads)
         dparams = {'nthreads': num_threads}
-        
-        if not(patch_size is None or patch_size == "default" or isinstance(patch_size, int) or len(patch_size) == self.ndims):
-            raise RuntimeError(f"patch_size must either be None, an integer, or a list of tuples matching the dimensionality of the array.")
-        if not(chunk_size is None or isinstance(chunk_size, int) or len(chunk_size) == self.ndims):
-            raise RuntimeError(f"chunk_size must either be None, an integer, or a list of tuples matching the dimensionality of the array.")
-        if not(block_size is None or isinstance(block_size, int) or len(block_size) == self.ndims):
-            raise RuntimeError(f"block_size must either be None, an integer, or a list of tuples matching the dimensionality of the array.")
+
         if patch_size is not None and patch_size != "default" and (self.ndims == 1 or self.ndims > 3):
             raise NotImplementedError("Chunk and block size optimization based on patch size is only implemented for 2D and 3D images. Please set the chunk and block size manually or set to None for blosc2 to determine a chunk and block size.")
         if patch_size is not None and patch_size != "default" and (chunk_size is not None or block_size is not None):
             raise RuntimeError("patch_size and chunk_size / block_size cannot both be explicitly set.")
 
-        if patch_size == "default" and self.patch_size is not None:  # Use previously loaded patch size, when patch size is not explicitly set and a patch size from a previously loaded image exists
-            patch_size = self.patch_size
-            self.patch_size = (patch_size,) * self.ndims if isinstance(patch_size, int) else patch_size
-            self.chunk_size, self.block_size = self.comp_blosc2_params(self.array.shape, self.patch_size)
-        elif patch_size == "default" and self.patch_size is None:  # Use default patch size, when patch size is not explicitly set and no patch size from a previously loaded image exists
-            patch_size = MED_BLOSC2_DEFAULT_PATCH_SIZE
-            self.patch_size = (patch_size,) * self.ndims if isinstance(patch_size, int) else patch_size
-            self.chunk_size, self.block_size = self.comp_blosc2_params(self.array.shape, self.patch_size)
-        elif patch_size is None:  # Ignore patch size and let blosc2 auto configure chunk and block size, when patch size is explicitly set to None
-            self.patch_size = None
-            self.chunk_size = chunk_size
-            self.block_size = block_size
-        else:  # Use patch size, when patch size is explicitly to a value
-            self.patch_size = (patch_size,) * self.ndims if isinstance(patch_size, int) else patch_size
-            self.chunk_size, self.block_size = self.comp_blosc2_params(self.array.shape, self.patch_size)
+        if patch_size == "default": 
+            if self.meta._blosc2.patch_size is not None:  # Use previously loaded patch size, when patch size is not explicitly set and a patch size from a previously loaded image exists
+                patch_size = self.meta._blosc2.patch_size
+            else:  # Use default patch size, when patch size is not explicitly set and no patch size from a previously loaded image exists
+                patch_size = [MED_BLOSC2_DEFAULT_PATCH_SIZE] * self.ndims
+
+        patch_size = [patch_size] * self.ndims if isinstance(patch_size, int) else patch_size
+
+        if patch_size is not None:
+            chunk_size, block_size = self.comp_blosc2_params(self.array.shape, patch_size)
+
+        meta_blosc2 = MetaBlosc2(chunk_size, block_size, patch_size)
+        meta_blosc2._validate_and_cast(self.ndims)
+        self.meta._blosc2 = meta_blosc2
         
         metadata = None
         if str(filepath).endswith(f".{MED_BLOSC2_SUFFIX}"):
-            metadata = {"med_blosc2": {}}
-            metadata["med_blosc2"]["spacing"] = self.spacing
-            metadata["med_blosc2"]["origin"] = self.origin
-            metadata["med_blosc2"]["direction"] = self.direction
-            metadata["med_blosc2"]["header"] = self.header
-            metadata["med_blosc2"]["is_seg"] = self.is_seg
-            metadata["med_blosc2"]["chunk_size"] = self.chunk_size
-            metadata["med_blosc2"]["block_size"] = self.block_size
-            metadata["med_blosc2"]["patch_size"] = self.patch_size
-            metadata["med_blosc2"]["med_blosc2_version"] = MED_BLOSC2_VERSION
+            metadata = {"med_blosc2": self.meta.to_dict()}
 
-        if not self._is_serializable(metadata):
-            raise RuntimeError("Image header is not serializable.")
+        if not is_serializable(metadata):
+            raise RuntimeError("Metadata is not serializable.")
 
         cparams = {'codec': codec, 'clevel': clevel,}
         self.array = np.ascontiguousarray(self.array[...])  # Needs to overwrite self.array to ensure there is no opened blosc2 overwriting itself
         if Path(filepath).is_file():
             os.remove(str(filepath))
-        blosc2.asarray(self.array, urlpath=str(filepath), chunks=self.chunk_size, blocks=self.block_size, cparams=cparams, dparams=dparams, mmap_mode='w+', meta=metadata)
+        blosc2.asarray(self.array, urlpath=str(filepath), chunks=self.meta._blosc2.chunk_size, blocks=self.meta._blosc2.block_size, cparams=cparams, dparams=dparams, mmap_mode='w+', meta=metadata)
 
     def comp_blosc2_params(
             self,
@@ -469,49 +424,4 @@ class MedBlosc2:
         block_size = block_size[num_squeezes:]
         chunk_size = chunk_size[num_squeezes:]
 
-        return tuple([int(value) for value in chunk_size]), tuple([int(value) for value in block_size])
-    
-    def _is_serializable(self, d: dict) -> bool:
-        """Checks whether a dictionary is JSON-serializable.
-
-        Args:
-            d (dict): Input dictionary to test.
-
-        Returns:
-            bool: True when serializable, otherwise False.
-        """
-        try:
-            json.dumps(d)
-            return True
-        except (TypeError, OverflowError):
-            return False
-    
-
-if __name__ == '__main__':
-    print("Creating array...")
-    array = np.random.random((128, 512, 512))
-    spacing = (2, 2.5, 4)
-    origin = None
-    direction = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
-    header = {"tmp1": "This is an image", "tmp2": 5, "tmp3": {"test1": 16.4587, "test2": [1, 2, 3, 4, 5, 6]}}
-    filepath = "tmp.mb2nd"
-
-    print("Initializing image...")
-    image = MedBlosc2(array, spacing=spacing, origin=origin, direction=direction, header=header)
-    print("Saving image...")
-    image.save(filepath)
-
-    print("Loading image...")
-    image = MedBlosc2(filepath, mmap=True)
-    print("array type: ", type(image.array))
-    print("spacing: ", image.spacing)
-    print("origin: ", image.origin)
-    print("direction: ", image.direction)
-    print("header: ", image.header)
-    print("chunk_size: ", image.chunk_size)
-    print("block_size: ", image.block_size)
-    print("patch_size: ", image.patch_size)
-    print("version: ", image._med_blosc2_version)
-
-    if Path(filepath).is_file():
-        os.remove(filepath)
+        return [int(value) for value in chunk_size], [int(value) for value in block_size]

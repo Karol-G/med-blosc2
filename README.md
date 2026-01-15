@@ -130,6 +130,11 @@ image.save("manual-chunk-block.mb2nd", patch_size=None,
            chunk_size=(1, 128, 128), block_size=(1, 32, 32))
 ```
 
+## Metadata schema
+
+See `SCHEMA.md` for the full MedBlosc2 metadata schema, including field
+descriptions and types.
+
 ## Contributing
 
 Contributions are welcome! Please open a pull request with clear changes and add tests when appropriate.
